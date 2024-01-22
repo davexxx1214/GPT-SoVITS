@@ -37,7 +37,7 @@ parser.add_argument("-dl", "--default_refer_language", type=str, default="", hel
 
 parser.add_argument("-d", "--device", type=str, default=g_config.infer_device, help="cuda / cpu")
 parser.add_argument("-p", "--port", type=int, default=g_config.api_port, help="default: 9880")
-parser.add_argument("-a", "--bind_addr", type=str, default="127.0.0.1", help="default: 127.0.0.1")
+parser.add_argument("-a", "--bind_addr", type=str, default="0.0.0.0", help="default: 0.0.0.0")
 parser.add_argument("-fp", "--full_precision", action="store_true", default=False, help="覆盖config.is_half为False, 使用全精度")
 parser.add_argument("-hp", "--half_precision", action="store_true", default=False, help="覆盖config.is_half为True, 使用半精度")
 # bool值的用法为 `python ./api.py -fp ...`
@@ -99,7 +99,6 @@ if is_half:
 else:
     bert_model = bert_model.to(device)
 
-
 def get_bert_feature(text, word2ph):
     with torch.no_grad():
         inputs = tokenizer(text, return_tensors="pt")
@@ -116,54 +115,56 @@ def get_bert_feature(text, word2ph):
     # if(is_half==True):phone_level_feature=phone_level_feature.half()
     return phone_level_feature.T
 
-
-n_semantic = 1024
-dict_s2 = torch.load(sovits_path, map_location="cpu")
-hps = dict_s2["config"]
-
-
-class DictToAttrRecursive:
-    def __init__(self, input_dict):
-        for key, value in input_dict.items():
-            if isinstance(value, dict):
-                # 如果值是字典，递归调用构造函数
-                setattr(self, key, DictToAttrRecursive(value))
-            else:
-                setattr(self, key, value)
+def load_model(gpt_path, sovits_path):
+    n_semantic = 1024
+    dict_s2 = torch.load(sovits_path, map_location="cpu")
+    hps = dict_s2["config"]
 
 
-hps = DictToAttrRecursive(hps)
-hps.model.semantic_frame_rate = "25hz"
-dict_s1 = torch.load(gpt_path, map_location="cpu")
-config = dict_s1["config"]
-ssl_model = cnhubert.get_model()
-if is_half:
-    ssl_model = ssl_model.half().to(device)
-else:
-    ssl_model = ssl_model.to(device)
+    class DictToAttrRecursive:
+        def __init__(self, input_dict):
+            for key, value in input_dict.items():
+                if isinstance(value, dict):
+                    # 如果值是字典，递归调用构造函数
+                    setattr(self, key, DictToAttrRecursive(value))
+                else:
+                    setattr(self, key, value)
 
-vq_model = SynthesizerTrn(
-    hps.data.filter_length // 2 + 1,
-    hps.train.segment_size // hps.data.hop_length,
-    n_speakers=hps.data.n_speakers,
-    **hps.model)
-if is_half:
-    vq_model = vq_model.half().to(device)
-else:
-    vq_model = vq_model.to(device)
-vq_model.eval()
-print(vq_model.load_state_dict(dict_s2["weight"], strict=False))
-hz = 50
-max_sec = config['data']['max_sec']
-t2s_model = Text2SemanticLightningModule(config, "ojbk", is_train=False)
-t2s_model.load_state_dict(dict_s1["weight"])
-if is_half:
-    t2s_model = t2s_model.half()
-t2s_model = t2s_model.to(device)
-t2s_model.eval()
-total = sum([param.nelement() for param in t2s_model.parameters()])
-print("Number of parameter: %.2fM" % (total / 1e6))
 
+    hps = DictToAttrRecursive(hps)
+    hps.model.semantic_frame_rate = "25hz"
+
+    dict_s1 = torch.load(gpt_path, map_location="cpu")
+    config = dict_s1["config"]
+    ssl_model = cnhubert.get_model()
+    if is_half:
+        ssl_model = ssl_model.half().to(device)
+    else:
+        ssl_model = ssl_model.to(device)
+
+    vq_model = SynthesizerTrn(
+        hps.data.filter_length // 2 + 1,
+        hps.train.segment_size // hps.data.hop_length,
+        n_speakers=hps.data.n_speakers,
+        **hps.model)
+    if is_half:
+        vq_model = vq_model.half().to(device)
+    else:
+        vq_model = vq_model.to(device)
+    vq_model.eval()
+    print(vq_model.load_state_dict(dict_s2["weight"], strict=False))
+    hz = 50
+    max_sec = config['data']['max_sec']
+    t2s_model = Text2SemanticLightningModule(config, "ojbk", is_train=False)
+    t2s_model.load_state_dict(dict_s1["weight"])
+    if is_half:
+        t2s_model = t2s_model.half()
+    t2s_model = t2s_model.to(device)
+    t2s_model.eval()
+    total = sum([param.nelement() for param in t2s_model.parameters()])
+    print("Number of parameter: %.2fM" % (total / 1e6))
+
+load_model(gpt_path, sovits_path)
 
 def get_spepc(hps, filename):
     audio = load_audio(filename, int(hps.data.sampling_rate))
@@ -259,12 +260,15 @@ def get_tts_wav(ref_wav_path, prompt_text, prompt_language, text, text_language)
     yield hps.data.sampling_rate, (np.concatenate(audio_opt, 0) * 32768).astype(np.int16)
 
 
-def handle(command, refer_wav_path, prompt_text, prompt_language, text, text_language):
+def handle(command, _sovits_path, _gpt_path, refer_wav_path, prompt_text, prompt_language, text, text_language):
     if command == "/restart":
         os.execl(g_config.python_exec, g_config.python_exec, *sys.argv)
     elif command == "/exit":
         os.kill(os.getpid(), signal.SIGTERM)
         exit(0)
+
+    if(_sovits_path != sovits_path or _gpt_path != gpt_path):
+        load_model(_sovits_path, _gpt_path)
 
     if (
             refer_wav_path == "" or refer_wav_path is None
@@ -301,6 +305,8 @@ async def tts_endpoint(request: Request):
     json_post_raw = await request.json()
     return handle(
         json_post_raw.get("command"),
+        json_post_raw.get("sovits_path"),
+        json_post_raw.get("gpt_path"),
         json_post_raw.get("refer_wav_path"),
         json_post_raw.get("prompt_text"),
         json_post_raw.get("prompt_language"),
@@ -312,13 +318,15 @@ async def tts_endpoint(request: Request):
 @app.get("/")
 async def tts_endpoint(
         command: str = None,
+        sovits_path: str = None,
+        gpt_path: str = None,
         refer_wav_path: str = None,
         prompt_text: str = None,
         prompt_language: str = None,
         text: str = None,
         text_language: str = None,
 ):
-    return handle(command, refer_wav_path, prompt_text, prompt_language, text, text_language)
+    return handle(command, sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_language, text, text_language)
 
 
 if __name__ == "__main__":
