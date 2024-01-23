@@ -27,24 +27,35 @@ g_config = global_config.Config()
 
 parser = argparse.ArgumentParser(description="GPT-SoVITS api")
 
-parser.add_argument("-s", "--sovits_path", type=str, default=g_config.sovits_path, help="SoVITS模型路径")
-parser.add_argument("-g", "--gpt_path", type=str, default=g_config.gpt_path, help="GPT模型路径")
+parser.add_argument("-s", "--sovits_path", type=str,
+                    default=g_config.sovits_path, help="SoVITS模型路径")
+parser.add_argument("-g", "--gpt_path", type=str,
+                    default=g_config.gpt_path, help="GPT模型路径")
 
 parser.add_argument("-dr", "--default_refer_path", type=str, default="",
                     help="默认参考音频路径, 请求缺少参考音频时调用")
-parser.add_argument("-dt", "--default_refer_text", type=str, default="", help="默认参考音频文本")
-parser.add_argument("-dl", "--default_refer_language", type=str, default="", help="默认参考音频语种")
+parser.add_argument("-dt", "--default_refer_text",
+                    type=str, default="", help="默认参考音频文本")
+parser.add_argument("-dl", "--default_refer_language",
+                    type=str, default="", help="默认参考音频语种")
 
-parser.add_argument("-d", "--device", type=str, default=g_config.infer_device, help="cuda / cpu")
-parser.add_argument("-p", "--port", type=int, default=g_config.api_port, help="default: 9880")
-parser.add_argument("-a", "--bind_addr", type=str, default="0.0.0.0", help="default: 0.0.0.0")
-parser.add_argument("-fp", "--full_precision", action="store_true", default=False, help="覆盖config.is_half为False, 使用全精度")
-parser.add_argument("-hp", "--half_precision", action="store_true", default=False, help="覆盖config.is_half为True, 使用半精度")
+parser.add_argument("-d", "--device", type=str,
+                    default=g_config.infer_device, help="cuda / cpu")
+parser.add_argument("-p", "--port", type=int,
+                    default=g_config.api_port, help="default: 9880")
+parser.add_argument("-a", "--bind_addr", type=str,
+                    default="0.0.0.0", help="default: 0.0.0.0")
+parser.add_argument("-fp", "--full_precision", action="store_true",
+                    default=False, help="覆盖config.is_half为False, 使用全精度")
+parser.add_argument("-hp", "--half_precision", action="store_true",
+                    default=False, help="覆盖config.is_half为True, 使用半精度")
 # bool值的用法为 `python ./api.py -fp ...`
 # 此时 full_precision==True, half_precision==False
 
-parser.add_argument("-hb", "--hubert_path", type=str, default=g_config.cnhubert_path, help="覆盖config.cnhubert_path")
-parser.add_argument("-b", "--bert_path", type=str, default=g_config.bert_path, help="覆盖config.bert_path")
+parser.add_argument("-hb", "--hubert_path", type=str,
+                    default=g_config.cnhubert_path, help="覆盖config.cnhubert_path")
+parser.add_argument("-b", "--bert_path", type=str,
+                    default=g_config.bert_path, help="覆盖config.bert_path")
 
 args = parser.parse_args()
 
@@ -99,11 +110,12 @@ if is_half:
 else:
     bert_model = bert_model.to(device)
 
+
 def get_bert_feature(text, word2ph):
     with torch.no_grad():
         inputs = tokenizer(text, return_tensors="pt")
         for i in inputs:
-            inputs[i] = inputs[i].to(device)  #####输入是long不用管精度问题，精度随bert_model
+            inputs[i] = inputs[i].to(device)  # 输入是long不用管精度问题，精度随bert_model
         res = bert_model(**inputs, output_hidden_states=True)
         res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
     assert len(word2ph) == len(text)
@@ -115,21 +127,31 @@ def get_bert_feature(text, word2ph):
     # if(is_half==True):phone_level_feature=phone_level_feature.half()
     return phone_level_feature.T
 
-def load_model(gpt_path, sovits_path):
+class DictToAttrRecursive:
+    def __init__(self, input_dict):
+        for key, value in input_dict.items():
+            if isinstance(value, dict):
+                # 如果值是字典，递归调用构造函数
+                setattr(self, key, DictToAttrRecursive(value))
+            else:
+                setattr(self, key, value)
+
+
+def load_model(_gpt_path, _sovits_path):
+    global ssl_model
+    global vq_model
+    global t2s_model
+    global hps
+    global hz
+    global max_sec
+    global sovits_path
+    global gpt_path
+
+    sovits_path = _sovits_path
+    gpt_path = _gpt_path
     n_semantic = 1024
     dict_s2 = torch.load(sovits_path, map_location="cpu")
     hps = dict_s2["config"]
-
-
-    class DictToAttrRecursive:
-        def __init__(self, input_dict):
-            for key, value in input_dict.items():
-                if isinstance(value, dict):
-                    # 如果值是字典，递归调用构造函数
-                    setattr(self, key, DictToAttrRecursive(value))
-                else:
-                    setattr(self, key, value)
-
 
     hps = DictToAttrRecursive(hps)
     hps.model.semantic_frame_rate = "25hz"
@@ -164,7 +186,9 @@ def load_model(gpt_path, sovits_path):
     total = sum([param.nelement() for param in t2s_model.parameters()])
     print("Number of parameter: %.2fM" % (total / 1e6))
 
+
 load_model(gpt_path, sovits_path)
+
 
 def get_spepc(hps, filename):
     audio = load_audio(filename, int(hps.data.sampling_rate))
@@ -200,7 +224,8 @@ def get_tts_wav(ref_wav_path, prompt_text, prompt_language, text, text_language)
             wav16k = wav16k.half().to(device)
         else:
             wav16k = wav16k.to(device)
-        ssl_content = ssl_model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2)  # .float()
+        ssl_content = ssl_model.model(wav16k.unsqueeze(0))[
+            "last_hidden_state"].transpose(1, 2)  # .float()
         codes = vq_model.extract_latent(ssl_content)
         prompt_semantic = codes[0, 0]
     t1 = ttime()
@@ -210,7 +235,8 @@ def get_tts_wav(ref_wav_path, prompt_text, prompt_language, text, text_language)
     phones1 = cleaned_text_to_sequence(phones1)
     texts = text.split("\n")
     audio_opt = []
-    zero_wav = np.zeros(int(hps.data.sampling_rate * 0.3), dtype=np.float16 if is_half == True else np.float32)
+    zero_wav = np.zeros(int(hps.data.sampling_rate * 0.3),
+                        dtype=np.float16 if is_half == True else np.float32)
     for text in texts:
         phones2, word2ph2, norm_text2 = clean_text(text, text_language)
         phones2 = cleaned_text_to_sequence(phones2)
@@ -225,7 +251,8 @@ def get_tts_wav(ref_wav_path, prompt_text, prompt_language, text, text_language)
             bert2 = torch.zeros((1024, len(phones2))).to(bert1)
         bert = torch.cat([bert1, bert2], 1)
 
-        all_phoneme_ids = torch.LongTensor(phones1 + phones2).to(device).unsqueeze(0)
+        all_phoneme_ids = torch.LongTensor(
+            phones1 + phones2).to(device).unsqueeze(0)
         bert = bert.to(device).unsqueeze(0)
         all_phoneme_len = torch.tensor([all_phoneme_ids.shape[-1]]).to(device)
         prompt = prompt_semantic.unsqueeze(0).to(device)
@@ -242,7 +269,8 @@ def get_tts_wav(ref_wav_path, prompt_text, prompt_language, text, text_language)
                 early_stop_num=hz * max_sec)
         t3 = ttime()
         # print(pred_semantic.shape,idx)
-        pred_semantic = pred_semantic[:, -idx:].unsqueeze(0)  # .unsqueeze(0)#mq要多unsqueeze一次
+        # .unsqueeze(0)#mq要多unsqueeze一次
+        pred_semantic = pred_semantic[:, -idx:].unsqueeze(0)
         refer = get_spepc(hps, ref_wav_path)  # .to(device)
         if (is_half == True):
             refer = refer.half().to(device)
@@ -252,7 +280,7 @@ def get_tts_wav(ref_wav_path, prompt_text, prompt_language, text, text_language)
         audio = \
             vq_model.decode(pred_semantic, torch.LongTensor(phones2).to(device).unsqueeze(0),
                             refer).detach().cpu().numpy()[
-                0, 0]  ###试试重建不带上prompt部分
+                0, 0]  # 试试重建不带上prompt部分
         audio_opt.append(audio)
         audio_opt.append(zero_wav)
         t4 = ttime()
@@ -267,7 +295,7 @@ def handle(command, _sovits_path, _gpt_path, refer_wav_path, prompt_text, prompt
         os.kill(os.getpid(), signal.SIGTERM)
         exit(0)
 
-    if(_sovits_path != sovits_path or _gpt_path != gpt_path):
+    if (_sovits_path != sovits_path or _gpt_path != gpt_path):
         load_model(_sovits_path, _gpt_path)
 
     if (
