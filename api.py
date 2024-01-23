@@ -20,8 +20,12 @@ from text.cleaner import clean_text
 from module.mel_processing import spectrogram_torch
 from my_utils import load_audio
 import config as global_config
+import json
 
 g_config = global_config.Config()
+
+with open('config.json', 'r') as f:
+    local_config = json.load(f)
 
 # AVAILABLE_COMPUTE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -316,30 +320,42 @@ app = FastAPI()
 @app.post("/")
 async def tts_endpoint(request: Request):
     json_post_raw = await request.json()
+
+    model_list =  local_config['model_list']
+    model = json_post_raw.get("model")
+    if model not in model_list:
+        model = 'default'
+
+    model_root_path = local_config['model_root_path']
+    prompt_text_path = f"{model_root_path}/{model}/{model}.txt"
+    refer_wav_path = f"{model_root_path}/{model}/{model}.wav"
+    sovits_path = f"{model_root_path}/{model}/{model}.pth"
+    gpt_path = f"{model_root_path}/{model}/{model}.ckpt"
+    text = json_post_raw.get("text")
+    print('text = ' + text)
+
+    with open(prompt_text_path, 'r',  encoding='utf-8') as file:
+        prompt_text = file.read()
+    prompt_language = 'zh'
+    text_language = 'zh'
+
     return handle(
         json_post_raw.get("command"),
-        json_post_raw.get("sovits_path"),
-        json_post_raw.get("gpt_path"),
-        json_post_raw.get("refer_wav_path"),
-        json_post_raw.get("prompt_text"),
-        json_post_raw.get("prompt_language"),
-        json_post_raw.get("text"),
-        json_post_raw.get("text_language"),
+        sovits_path,
+        gpt_path,
+        refer_wav_path,
+        prompt_text,
+        prompt_language,
+        text,
+        text_language,
     )
 
 
 @app.get("/")
 async def tts_endpoint(
-        command: str = None,
-        sovits_path: str = None,
-        gpt_path: str = None,
-        refer_wav_path: str = None,
-        prompt_text: str = None,
-        prompt_language: str = None,
-        text: str = None,
-        text_language: str = None,
 ):
-    return handle(command, sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_language, text, text_language)
+    model_list =  local_config['model_list']
+    return model_list
 
 
 if __name__ == "__main__":
