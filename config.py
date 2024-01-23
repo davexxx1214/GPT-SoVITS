@@ -13,7 +13,8 @@ bert_path = "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
 ##pretrained_gpt_path = "GPT_SoVITS/pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt"
 pretrained_sovits_path = "GPT_SoVITS/pretrained_models/leijun/leijun.pth"
 pretrained_gpt_path = "GPT_SoVITS/pretrained_models/leijun/leijun.ckpt"
-
+model_root_path = "GPT_SoVITS/pretrained_models"
+model_list = ["leijun", "liudehua"]
 
 exp_root = "logs"
 python_exec = sys.executable or "python"
