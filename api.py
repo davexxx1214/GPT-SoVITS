@@ -431,7 +431,7 @@ def get_tts_wav(gpt_path, sovits_path, ref_wav_path, prompt_text, prompt_languag
   print("%.3f\t%.3f\t%.3f\t%.3f" % (t1 - t0, t2 - t1, t3 - t2, t4 - t3))
   yield hps.data.sampling_rate, (np.concatenate(audio_opt, 0) * 32768).astype(np.int16)
 
-def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_language, text, text_language):
+async def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_language, text, text_language):
     if (
             refer_wav_path == "" or refer_wav_path is None
             or prompt_text == "" or prompt_text is None
@@ -527,29 +527,22 @@ async def tts_endpoint(request: Request):
     model = json_post_raw.get("model")
     if model not in model_list:
         model = 'default'
-
-    model_root_path = local_config['model_root_path']
-    prompt_text_path = f"{model_root_path}/{model}/{model}.txt"
-    refer_wav_path = f"{model_root_path}/{model}/{model}.wav"
-    sovits_path = f"{model_root_path}/{model}/{model}.pth"
-    gpt_path = f"{model_root_path}/{model}/{model}.ckpt"
+    
     text = json_post_raw.get("text")
+
     print('text = ' + text)
 
-    with open(prompt_text_path, 'r',  encoding='utf-8') as file:
-        prompt_text = file.read()
-    prompt_language = 'zh'
-    text_language = 'zh'
-
-    return handle(
-        sovits_path,
-        gpt_path,
-        refer_wav_path,
-        prompt_text,
-        prompt_language,
-        text,
-        text_language,
-    )
+    result = await handleTask(model, text)
+    return result
+    # return handle(
+    #     sovits_path,
+    #     gpt_path,
+    #     refer_wav_path,
+    #     prompt_text,
+    #     prompt_language,
+    #     text,
+    #     text_language,
+    # )
 
 
 
@@ -651,7 +644,7 @@ async def worker():
               await pool.hset(status_key, task_id, json.dumps({"status": "PROCESSING", "timestamp": task['timestamp']}))
               await pool.expire(status_key, expiration)
               try:
-                  audio_file_path = handleTask(model, content)
+                  audio_file_path = await handleTask(model, content)
                   await pool.hset(results_key, task_id, audio_file_path)
                   await pool.hset(status_key, task_id, json.dumps({"status": "SUCCESS", "timestamp": task['timestamp']}))
                   await pool.expire(status_key, expiration)
