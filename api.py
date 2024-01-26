@@ -143,7 +143,8 @@ parser.add_argument("-dt", "--default_refer_text", type=str, default="", help="�
 parser.add_argument("-dl", "--default_refer_language", type=str, default="", help="默认参考音频语种")
 
 parser.add_argument("-d", "--device", type=str, default=g_config.infer_device, help="cuda / cpu / mps")
-parser.add_argument("-a", "--bind_addr", type=str, default="127.0.0.1", help="default: 127.0.0.1")
+parser.add_argument("-a", "--bind_addr", type=str,
+                    default="0.0.0.0", help="default: 0.0.0.0")
 parser.add_argument("-p", "--port", type=int, default=g_config.api_port, help="default: 9880")
 parser.add_argument("-fp", "--full_precision", action="store_true", default=False, help="覆盖config.is_half为False, 使用全精度")
 parser.add_argument("-hp", "--half_precision", action="store_true", default=False, help="覆盖config.is_half为True, 使用半精度")
@@ -246,6 +247,9 @@ def get_bert_feature(text, word2ph):
     return phone_level_feature.T
 
 def load_tts_model(gpt_path, sovits_path, device):
+  print('gpt path = ' + gpt_path)
+  print('gpt sovits_path = ' + sovits_path)
+
   n_semantic = 1024
   dict_s2 = torch.load(sovits_path, map_location="cpu")
   hps = dict_s2["config"]
@@ -261,6 +265,7 @@ def load_tts_model(gpt_path, sovits_path, device):
 
   hps = DictToAttrRecursive(hps)
   hps.model.semantic_frame_rate = "25hz"
+  
   dict_s1 = torch.load(gpt_path, map_location="cpu")
   config = dict_s1["config"]
   ssl_model = cnhubert.get_model()
@@ -268,6 +273,8 @@ def load_tts_model(gpt_path, sovits_path, device):
     ssl_model = ssl_model.half().to(device)
   else:
     ssl_model = ssl_model.to(device)
+
+  print("hps.data: ", hps.data)
 
   vq_model = SynthesizerTrn(
     hps.data.filter_length // 2 + 1,
@@ -278,14 +285,14 @@ def load_tts_model(gpt_path, sovits_path, device):
     vq_model = vq_model.half().to(device)
   else:
     vq_model = vq_model.to(device)
-vq_model.eval()
-print(vq_model.load_state_dict(dict_s2["weight"], strict=False))
-hz = 50
-max_sec = config['data']['max_sec']
-t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
-t2s_model.load_state_dict(dict_s1["weight"])
-if is_half:
-    t2s_model = t2s_model.half()
+  vq_model.eval()
+  print(vq_model.load_state_dict(dict_s2["weight"], strict=False))
+  hz = 50
+  max_sec = config['data']['max_sec']
+  t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
+  t2s_model.load_state_dict(dict_s1["weight"])
+  if is_half:
+      t2s_model = t2s_model.half()
   t2s_model = t2s_model.to(device)
   t2s_model.eval()
   total = sum([param.nelement() for param in t2s_model.parameters()])
@@ -319,7 +326,7 @@ dict_language = {
 
 
 def get_tts_wav(gpt_path, sovits_path, ref_wav_path, prompt_text, prompt_language, text, text_language):
-  	hps, ssl_model, vq_model, t2s_model, config, hz, max_sec = load_tts_model(gpt_path, sovits_path, device)
+    hps, ssl_model, vq_model, t2s_model, config, hz, max_sec = load_tts_model(gpt_path, sovits_path, device)
 
     t0 = ttime()
     prompt_text = prompt_text.strip("\n")
@@ -423,7 +430,7 @@ def handle_change(path, text, language):
     return JSONResponse({"code": 0, "message": "Success"}, status_code=200)
 
 
-def handle(refer_wav_path, prompt_text, prompt_language, text, text_language):
+def handle(gpt_path, sovits_path, refer_wav_path, prompt_text, prompt_language, text, text_language):
     if (
             refer_wav_path == "" or refer_wav_path is None
             or prompt_text == "" or prompt_text is None
@@ -508,7 +515,6 @@ async def tts_endpoint(request: Request):
     text_language = 'zh'
 
     return handle(
-        json_post_raw.get("command"),
         sovits_path,
         gpt_path,
         refer_wav_path,
