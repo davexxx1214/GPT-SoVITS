@@ -534,16 +534,6 @@ async def tts_endpoint(request: Request):
 
     result = await handleTask(model, text)
     return result
-    # return handle(
-    #     sovits_path,
-    #     gpt_path,
-    #     refer_wav_path,
-    #     prompt_text,
-    #     prompt_language,
-    #     text,
-    #     text_language,
-    # )
-
 
 
 @app.get("/")
