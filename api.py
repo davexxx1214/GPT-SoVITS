@@ -355,7 +355,7 @@ dict_language = {
 }
 
 
-async def get_tts_wav(gpt_path, sovits_path, ref_wav_path, prompt_text, prompt_language, text, text_language):
+def get_tts_wav(gpt_path, sovits_path, ref_wav_path, prompt_text, prompt_language, text, text_language):
   hps, ssl_model, vq_model, t2s_model, config, hz, max_sec = load_tts_model(gpt_path, sovits_path, device)
 
   t0 = ttime()
@@ -431,7 +431,7 @@ async def get_tts_wav(gpt_path, sovits_path, ref_wav_path, prompt_text, prompt_l
   print("%.3f\t%.3f\t%.3f\t%.3f" % (t1 - t0, t2 - t1, t3 - t2, t4 - t3))
   yield hps.data.sampling_rate, (np.concatenate(audio_opt, 0) * 32768).astype(np.int16)
 
-async def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_language, text, text_language):
+def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_language, text, text_language):
     if (
             refer_wav_path == "" or refer_wav_path is None
             or prompt_text == "" or prompt_text is None
@@ -446,7 +446,7 @@ async def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_lang
             return JSONResponse({"code": 400, "message": "未指定参考音频且接口无预设"}, status_code=400)
 
     with torch.no_grad():
-        gen = await get_tts_wav(
+        gen = get_tts_wav(
             gpt_path, sovits_path, refer_wav_path, prompt_text, prompt_language, text, text_language
         )
         sampling_rate, audio_data = next(gen)
@@ -456,12 +456,38 @@ async def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_lang
     wav.seek(0)
 
     torch.cuda.empty_cache()
-    torch.mps.empty_cache()
+    # torch.mps.empty_cache()
     return StreamingResponse(wav, media_type="audio/wav")
 
 
 app = FastAPI()
 
+
+def handle_control(command):
+    if command == "restart":
+        os.execl(g_config.python_exec, g_config.python_exec, *sys.argv)
+    elif command == "exit":
+        os.kill(os.getpid(), signal.SIGTERM)
+        exit(0)
+
+
+def handle_change(path, text, language):
+    if is_empty(path, text, language):
+        return JSONResponse({"code": 400, "message": '缺少任意一项以下参数: "path", "text", "language"'}, status_code=400)
+
+    if path != "" or path is not None:
+        default_refer.path = path
+    if text != "" or text is not None:
+        default_refer.text = text
+    if language != "" or language is not None:
+        default_refer.language = language
+
+    print(f"[INFO] 当前默认参考音频路径: {default_refer.path}")
+    print(f"[INFO] 当前默认参考音频文本: {default_refer.text}")
+    print(f"[INFO] 当前默认参考音频语种: {default_refer.language}")
+    print(f"[INFO] is_ready: {default_refer.is_ready()}")
+
+    return JSONResponse({"code": 0, "message": "Success"}, status_code=200)
 
 @app.post("/control")
 async def control(request: Request):
@@ -526,6 +552,7 @@ async def tts_endpoint(request: Request):
     )
 
 
+
 @app.get("/")
 async def tts_endpoint(
 ):
@@ -582,7 +609,7 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    pool.close()
+    await pool.close()
 
 @app.post("/task")
 async def get_task_id(task: Task):
@@ -624,7 +651,7 @@ async def worker():
               await pool.hset(status_key, task_id, json.dumps({"status": "PROCESSING", "timestamp": task['timestamp']}))
               await pool.expire(status_key, expiration)
               try:
-                  audio_file_path = await handleTask(model, content)
+                  audio_file_path = handleTask(model, content)
                   await pool.hset(results_key, task_id, audio_file_path)
                   await pool.hset(status_key, task_id, json.dumps({"status": "SUCCESS", "timestamp": task['timestamp']}))
                   await pool.expire(status_key, expiration)
