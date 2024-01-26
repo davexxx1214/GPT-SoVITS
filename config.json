@@ -1,4 +1,4 @@
 {
     "model_root_path" : "GPT_SoVITS/pretrained_models",
-    "model_list" : ["leijun", "liudehua"]
+    "model_list" : ["leijun", "liudehua","linzhiling"]
 }

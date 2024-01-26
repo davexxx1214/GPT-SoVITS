@@ -131,9 +131,6 @@ def get_bert_feature(text, word2ph):
     # if(is_half==True):phone_level_feature=phone_level_feature.half()
     return phone_level_feature.T
 
-
-
-
 def load_tts_model(gpt_path, sovits_path, device):
   n_semantic = 1024
   dict_s2 = torch.load(sovits_path, map_location="cpu")
