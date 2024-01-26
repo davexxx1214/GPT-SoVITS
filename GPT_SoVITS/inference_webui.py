@@ -1,9 +1,33 @@
-import os
+import os,re,logging
+logging.getLogger("markdown_it").setLevel(logging.ERROR)
+logging.getLogger("urllib3").setLevel(logging.ERROR)
+logging.getLogger("httpcore").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.ERROR)
+logging.getLogger("asyncio").setLevel(logging.ERROR)
 
-gpt_path = os.environ.get(
-    "gpt_path", "pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt"
-)
-sovits_path = os.environ.get("sovits_path", "pretrained_models/s2G488k.pth")
+logging.getLogger("charset_normalizer").setLevel(logging.ERROR)
+logging.getLogger("torchaudio._extension").setLevel(logging.ERROR)
+import pdb
+
+if os.path.exists("./gweight.txt"):
+    with open("./gweight.txt", 'r',encoding="utf-8") as file:
+        gweight_data = file.read()
+        gpt_path = os.environ.get(
+    "gpt_path", gweight_data)
+else:
+    gpt_path = os.environ.get(
+    "gpt_path", "GPT_SoVITS/pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt")
+
+if os.path.exists("./sweight.txt"):
+    with open("./sweight.txt", 'r',encoding="utf-8") as file:
+        sweight_data = file.read()
+        sovits_path = os.environ.get("sovits_path", sweight_data)
+else:
+    sovits_path = os.environ.get("sovits_path", "GPT_SoVITS/pretrained_models/s2G488k.pth")
+# gpt_path = os.environ.get(
+#     "gpt_path", "pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt"
+# )
+# sovits_path = os.environ.get("sovits_path", "pretrained_models/s2G488k.pth")
 cnhubert_base_path = os.environ.get(
     "cnhubert_base_path", "pretrained_models/chinese-hubert-base"
 )
@@ -34,7 +58,32 @@ from my_utils import load_audio
 from tools.i18n.i18n import I18nAuto
 i18n = I18nAuto()
 
-device = "cuda"
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1' # 确保直接启动推理UI时也能够设置。
+
+if torch.cuda.is_available():
+    device = "cuda"
+elif torch.backends.mps.is_available():
+    device = "mps"
+else:
+    device = "cpu"
+
+# 操作记忆功能
+    
+file_path = './audio_log.txt'
+
+upload_audio_path = None
+upload_audio_text = ""
+upload_audio_lanuage = "中文"
+
+if os.path.exists(file_path):
+    with open(file_path, 'r',encoding="utf-8") as file:
+        text_data = file.read()
+        text_data = text_data.split("|")
+
+        upload_audio_path = text_data[0]
+        upload_audio_text = text_data[1]
+        upload_audio_lanuage = text_data[2]
+
 tokenizer = AutoTokenizer.from_pretrained(bert_path)
 bert_model = AutoModelForMaskedLM.from_pretrained(bert_path)
 if is_half == True:
@@ -42,13 +91,11 @@ if is_half == True:
 else:
     bert_model = bert_model.to(device)
 
-
-# bert_model=bert_model.to(device)
 def get_bert_feature(text, word2ph):
     with torch.no_grad():
         inputs = tokenizer(text, return_tensors="pt")
         for i in inputs:
-            inputs[i] = inputs[i].to(device)  #####输入是long不用管精度问题，精度随bert_model
+            inputs[i] = inputs[i].to(device)
         res = bert_model(**inputs, output_hidden_states=True)
         res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
     assert len(word2ph) == len(text)
@@ -57,14 +104,7 @@ def get_bert_feature(text, word2ph):
         repeat_feature = res[i].repeat(word2ph[i], 1)
         phone_level_feature.append(repeat_feature)
     phone_level_feature = torch.cat(phone_level_feature, dim=0)
-    # if(is_half==True):phone_level_feature=phone_level_feature.half()
     return phone_level_feature.T
-
-
-n_semantic = 1024
-
-dict_s2=torch.load(sovits_path,map_location="cpu")
-hps=dict_s2["config"]
 
 class DictToAttrRecursive(dict):
     def __init__(self, input_dict):
@@ -94,40 +134,50 @@ class DictToAttrRecursive(dict):
             raise AttributeError(f"Attribute {item} not found")
 
 
-hps = DictToAttrRecursive(hps)
-
-hps.model.semantic_frame_rate = "25hz"
-dict_s1 = torch.load(gpt_path, map_location="cpu")
-config = dict_s1["config"]
 ssl_model = cnhubert.get_model()
 if is_half == True:
     ssl_model = ssl_model.half().to(device)
 else:
     ssl_model = ssl_model.to(device)
 
-vq_model = SynthesizerTrn(
-    hps.data.filter_length // 2 + 1,
-    hps.train.segment_size // hps.data.hop_length,
-    n_speakers=hps.data.n_speakers,
-    **hps.model
-)
-if is_half == True:
-    vq_model = vq_model.half().to(device)
-else:
-    vq_model = vq_model.to(device)
-vq_model.eval()
-print(vq_model.load_state_dict(dict_s2["weight"], strict=False))
-hz = 50
-max_sec = config["data"]["max_sec"]
-t2s_model = Text2SemanticLightningModule(config, "ojbk", is_train=False)
-t2s_model.load_state_dict(dict_s1["weight"])
-if is_half == True:
-    t2s_model = t2s_model.half()
-t2s_model = t2s_model.to(device)
-t2s_model.eval()
-total = sum([param.nelement() for param in t2s_model.parameters()])
-print("Number of parameter: %.2fM" % (total / 1e6))
+def change_sovits_weights(sovits_path):
+    global vq_model,hps
+    dict_s2=torch.load(sovits_path,map_location="cpu")
+    hps=dict_s2["config"]
+    hps = DictToAttrRecursive(hps)
+    hps.model.semantic_frame_rate = "25hz"
+    vq_model = SynthesizerTrn(
+        hps.data.filter_length // 2 + 1,
+        hps.train.segment_size // hps.data.hop_length,
+        n_speakers=hps.data.n_speakers,
+        **hps.model
+    )
+    del vq_model.enc_q
+    if is_half == True:
+        vq_model = vq_model.half().to(device)
+    else:
+        vq_model = vq_model.to(device)
+    vq_model.eval()
+    print(vq_model.load_state_dict(dict_s2["weight"], strict=False))
+    with open("./sweight.txt","w",encoding="utf-8")as f:f.write(sovits_path)
+change_sovits_weights(sovits_path)
 
+def change_gpt_weights(gpt_path):
+    global hz,max_sec,t2s_model,config
+    hz = 50
+    dict_s1 = torch.load(gpt_path, map_location="cpu")
+    config = dict_s1["config"]
+    max_sec = config["data"]["max_sec"]
+    t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
+    t2s_model.load_state_dict(dict_s1["weight"])
+    if is_half == True:
+        t2s_model = t2s_model.half()
+    t2s_model = t2s_model.to(device)
+    t2s_model.eval()
+    total = sum([param.nelement() for param in t2s_model.parameters()])
+    print("Number of parameter: %.2fM" % (total / 1e6))
+    with open("./gweight.txt","w",encoding="utf-8")as f:f.write(gpt_path)
+change_gpt_weights(gpt_path)
 
 def get_spepc(hps, filename):
     audio = load_audio(filename, int(hps.data.sampling_rate))
@@ -152,7 +202,85 @@ dict_language={
 }
 
 
+def splite_en_inf(sentence, language):
+    pattern = re.compile(r'[a-zA-Z. ]+')
+    textlist = []
+    langlist = []
+    pos = 0
+    for match in pattern.finditer(sentence):
+        start, end = match.span()
+        if start > pos:
+            textlist.append(sentence[pos:start])
+            langlist.append(language)
+        textlist.append(sentence[start:end])
+        langlist.append("en")
+        pos = end
+    if pos < len(sentence):
+        textlist.append(sentence[pos:])
+        langlist.append(language)
+
+    return textlist, langlist
+
+
+def clean_text_inf(text, language):
+    phones, word2ph, norm_text = clean_text(text, language)
+    phones = cleaned_text_to_sequence(phones)
+
+    return phones, word2ph, norm_text
+
+
+def get_bert_inf(phones, word2ph, norm_text, language):
+    if language == "zh":
+        bert = get_bert_feature(norm_text, word2ph).to(device)
+    else:
+        bert = torch.zeros(
+            (1024, len(phones)),
+            dtype=torch.float16 if is_half == True else torch.float32,
+        ).to(device)
+
+    return bert
+
+
+def nonen_clean_text_inf(text, language):
+    textlist, langlist = splite_en_inf(text, language)
+    phones_list = []
+    word2ph_list = []
+    norm_text_list = []
+    for i in range(len(textlist)):
+        lang = langlist[i]
+        phones, word2ph, norm_text = clean_text_inf(textlist[i], lang)
+        phones_list.append(phones)
+        if lang == "en" or "ja":
+            pass
+        else:
+            word2ph_list.append(word2ph)
+        norm_text_list.append(norm_text)
+    print(word2ph_list)
+    phones = sum(phones_list, [])
+    word2ph = sum(word2ph_list, [])
+    norm_text = ' '.join(norm_text_list)
+
+    return phones, word2ph, norm_text
+
+
+def nonen_get_bert_inf(text, language):
+    textlist, langlist = splite_en_inf(text, language)
+    print(textlist)
+    print(langlist)
+    bert_list = []
+    for i in range(len(textlist)):
+        text = textlist[i]
+        lang = langlist[i]
+        phones, word2ph, norm_text = clean_text_inf(text, lang)
+        bert = get_bert_inf(phones, word2ph, norm_text, lang)
+        bert_list.append(bert)
+    bert = torch.cat(bert_list, dim=1)
+
+    return bert
+
+
 def get_tts_wav(ref_wav_path, prompt_text, prompt_language, text, text_language):
+    with open("./audio_log.txt","w",encoding="utf-8")as f:f.write(f"{wav_path_log}|{prompt_text}|{prompt_language}")
     t0 = ttime()
     prompt_text = prompt_text.strip("\n")
     prompt_language, text = prompt_language, text.strip("\n")
@@ -181,27 +309,32 @@ def get_tts_wav(ref_wav_path, prompt_text, prompt_language, text, text_language)
     t1 = ttime()
     prompt_language = dict_language[prompt_language]
     text_language = dict_language[text_language]
-    phones1, word2ph1, norm_text1 = clean_text(prompt_text, prompt_language)
-    phones1 = cleaned_text_to_sequence(phones1)
+
+    if prompt_language == "en":
+        phones1, word2ph1, norm_text1 = clean_text_inf(prompt_text, prompt_language)
+    else:
+        phones1, word2ph1, norm_text1 = nonen_clean_text_inf(prompt_text, prompt_language)
     texts = text.split("\n")
     audio_opt = []
+    if prompt_language == "en":
+        bert1 = get_bert_inf(phones1, word2ph1, norm_text1, prompt_language)
+    else:
+        bert1 = nonen_get_bert_inf(prompt_text, prompt_language)
+    
     for text in texts:
         # 解决输入目标文本的空行导致报错的问题
         if (len(text.strip()) == 0):
             continue
-        phones2, word2ph2, norm_text2 = clean_text(text, text_language)
-        phones2 = cleaned_text_to_sequence(phones2)
-        if prompt_language == "zh":
-            bert1 = get_bert_feature(norm_text1, word2ph1).to(device)
+        if text_language == "en":
+            phones2, word2ph2, norm_text2 = clean_text_inf(text, text_language)
         else:
-            bert1 = torch.zeros(
-                (1024, len(phones1)),
-                dtype=torch.float16 if is_half == True else torch.float32,
-            ).to(device)
-        if text_language == "zh":
-            bert2 = get_bert_feature(norm_text2, word2ph2).to(device)
+            phones2, word2ph2, norm_text2 = nonen_clean_text_inf(text, text_language)
+
+        if text_language == "en":
+            bert2 = get_bert_inf(phones2, word2ph2, norm_text2, text_language)
         else:
-            bert2 = torch.zeros((1024, len(phones2))).to(bert1)
+            bert2 = nonen_get_bert_inf(text, text_language)
+
         bert = torch.cat([bert1, bert2], 1)
 
         all_phoneme_ids = torch.LongTensor(phones1 + phones2).to(device).unsqueeze(0)
@@ -325,20 +458,52 @@ def cut3(inp):
     inp = inp.strip("\n")
     return "\n".join(["%s。" % item for item in inp.strip("。").split("。")])
 
+def custom_sort_key(s):
+    # 使用正则表达式提取字符串中的数字部分和非数字部分
+    parts = re.split('(\d+)', s)
+    # 将数字部分转换为整数，非数字部分保持不变
+    parts = [int(part) if part.isdigit() else part for part in parts]
+    return parts
+
+def change_choices():
+    SoVITS_names, GPT_names = get_weights_names()
+    return {"choices": sorted(SoVITS_names,key=custom_sort_key), "__type__": "update"}, {"choices": sorted(GPT_names,key=custom_sort_key), "__type__": "update"}
+
+pretrained_sovits_name="GPT_SoVITS/pretrained_models/s2G488k.pth"
+pretrained_gpt_name="GPT_SoVITS/pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt"
+SoVITS_weight_root="SoVITS_weights"
+GPT_weight_root="GPT_weights"
+os.makedirs(SoVITS_weight_root,exist_ok=True)
+os.makedirs(GPT_weight_root,exist_ok=True)
+def get_weights_names():
+    SoVITS_names = [pretrained_sovits_name]
+    for name in os.listdir(SoVITS_weight_root):
+        if name.endswith(".pth"):SoVITS_names.append("%s/%s"%(SoVITS_weight_root,name))
+    GPT_names = [pretrained_gpt_name]
+    for name in os.listdir(GPT_weight_root):
+        if name.endswith(".ckpt"): GPT_names.append("%s/%s"%(GPT_weight_root,name))
+    return SoVITS_names,GPT_names
+SoVITS_names,GPT_names = get_weights_names()
 
 with gr.Blocks(title="GPT-SoVITS WebUI") as app:
     gr.Markdown(
         value=i18n("本软件以MIT协议开源, 作者不对软件具备任何控制力, 使用软件者、传播软件导出的声音者自负全责. <br>如不认可该条款, 则不能使用或引用软件包内任何代码和文件. 详见根目录<b>LICENSE</b>.")
     )
-    # with gr.Tabs():
-    #     with gr.TabItem(i18n("伴奏人声分离&去混响&去回声")):
     with gr.Group():
+        gr.Markdown(value=i18n("模型切换"))
+        with gr.Row():
+            GPT_dropdown = gr.Dropdown(label=i18n("GPT模型列表"), choices=sorted(GPT_names, key=custom_sort_key), value=gpt_path,interactive=True)
+            SoVITS_dropdown = gr.Dropdown(label=i18n("SoVITS模型列表"), choices=sorted(SoVITS_names, key=custom_sort_key), value=sovits_path,interactive=True)
+            refresh_button = gr.Button(i18n("刷新模型路径"), variant="primary")
+            refresh_button.click(fn=change_choices, inputs=[], outputs=[SoVITS_dropdown, GPT_dropdown])
+            SoVITS_dropdown.change(change_sovits_weights,[SoVITS_dropdown],[])
+            GPT_dropdown.change(change_gpt_weights,[GPT_dropdown],[])
         gr.Markdown(value=i18n("*请上传并填写参考信息"))
         with gr.Row():
-            inp_ref = gr.Audio(label=i18n("请上传参考音频"), type="filepath")
-            prompt_text = gr.Textbox(label=i18n("参考音频的文本"), value="")
+            inp_ref = gr.Audio(label=i18n("请上传参考音频"), type="filepath",value=upload_audio_path)
+            prompt_text = gr.Textbox(label=i18n("参考音频的文本"), value=upload_audio_text)
             prompt_language = gr.Dropdown(
-                label=i18n("参考音频的语种"),choices=[i18n("中文"),i18n("英文"),i18n("日文")],value=i18n("中文")
+                label=i18n("参考音频的语种"),choices=[i18n("中文"),i18n("英文"),i18n("日文")],value=i18n(upload_audio_lanuage)
             )
         gr.Markdown(value=i18n("*请填写需要合成的目标文本"))
         with gr.Row():
@@ -369,6 +534,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
 app.queue(concurrency_count=511, max_size=1022).launch(
     server_name="0.0.0.0",
     inbrowser=True,
+    share=is_share,
     server_port=infer_ttswebui,
     quiet=True,
 )
