@@ -124,7 +124,44 @@ from text.cleaner import clean_text
 from module.mel_processing import spectrogram_torch
 from my_utils import load_audio
 import config as global_config
+
+import asyncio
 import json
+import shutil
+import uuid
+from datetime import timedelta
+from typing import Optional
+from pydantic import BaseModel
+from aioredis import Redis
+import time
+import aiofiles
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Create handlers
+c_handler = logging.StreamHandler()
+c_handler.setLevel(logging.INFO)
+
+# Create formatters and add it to handlers
+c_format = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
+c_handler.setFormatter(c_format)
+
+# Add handlers to the logger
+logger.addHandler(c_handler)
+
+pool = None
+status_key = "status"
+results_key = "results"
+expiration = 24 * 60 * 60  # Expire after 24 hours
+
+tmp_dir = "/tmp/audio_files"
+
+class Task(BaseModel):
+    model: str
+    content: str
+    timestamp: Optional[float]
 
 g_config = global_config.Config()
 
@@ -160,7 +197,6 @@ args = parser.parse_args()
 
 sovits_path = args.sovits_path
 gpt_path = args.gpt_path
-
 
 class DefaultRefer:
     def __init__(self, path, text, language):
@@ -319,7 +355,7 @@ dict_language = {
 }
 
 
-def get_tts_wav(gpt_path, sovits_path, ref_wav_path, prompt_text, prompt_language, text, text_language):
+async def get_tts_wav(gpt_path, sovits_path, ref_wav_path, prompt_text, prompt_language, text, text_language):
   hps, ssl_model, vq_model, t2s_model, config, hz, max_sec = load_tts_model(gpt_path, sovits_path, device)
 
   t0 = ttime()
@@ -395,10 +431,7 @@ def get_tts_wav(gpt_path, sovits_path, ref_wav_path, prompt_text, prompt_languag
   print("%.3f\t%.3f\t%.3f\t%.3f" % (t1 - t0, t2 - t1, t3 - t2, t4 - t3))
   yield hps.data.sampling_rate, (np.concatenate(audio_opt, 0) * 32768).astype(np.int16)
 
-
-
-
-def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_language, text, text_language):
+async def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_language, text, text_language):
     if (
             refer_wav_path == "" or refer_wav_path is None
             or prompt_text == "" or prompt_text is None
@@ -413,7 +446,7 @@ def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_language, 
             return JSONResponse({"code": 400, "message": "未指定参考音频且接口无预设"}, status_code=400)
 
     with torch.no_grad():
-        gen = get_tts_wav(
+        gen = await get_tts_wav(
             gpt_path, sovits_path, refer_wav_path, prompt_text, prompt_language, text, text_language
         )
         sampling_rate, audio_data = next(gen)
@@ -498,6 +531,121 @@ async def tts_endpoint(
 ):
     model_list =  local_config['model_list']
     return model_list
+
+async def handleTask(model: str, content: str):
+    model_list =  local_config['model_list']
+    if model not in model_list:
+        model = 'default'
+
+    model_root_path = local_config['model_root_path']
+    prompt_text_path = f"{model_root_path}/{model}/{model}.txt"
+    refer_wav_path = f"{model_root_path}/{model}/{model}.wav"
+    sovits_path = f"{model_root_path}/{model}/{model}.pth"
+    gpt_path = f"{model_root_path}/{model}/{model}.ckpt"
+    print('content = ' + content)
+    text = content
+
+    with open(prompt_text_path, 'r',  encoding='utf-8') as file:
+        prompt_text = file.read()
+    prompt_language = 'zh'
+    text_language = 'zh'
+
+    response =  await handle(
+        sovits_path,
+        gpt_path,
+        refer_wav_path,
+        prompt_text,
+        prompt_language,
+        text,
+        text_language,
+    )
+    if isinstance(response, StreamingResponse):
+      audio_file_path = os.path.join(tmp_dir, f"{uuid.uuid4()}.wav")
+      async with aiofiles.open(audio_file_path, 'wb') as out_file:
+          async for data in response.body_iterator:
+              await out_file.write(data)
+    
+    return audio_file_path
+
+@app.on_event("startup")
+async def startup():
+    global pool
+    try:
+        pool = Redis.from_url("redis://localhost")
+        logger.info("Connected to Redis")
+    except Exception as e:
+        logger.error(f"Error connecting to Redis: {e}")
+    os.makedirs(tmp_dir, exist_ok=True)
+    asyncio.create_task(worker())
+    asyncio.create_task(cleanup())
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    pool.close()
+
+@app.post("/task")
+async def get_task_id(task: Task):
+    task_id = str(uuid.uuid4())
+    current_timestamp = time.time()  # Get current UNIX timestamp
+    await pool.hset(status_key, task_id, json.dumps({"status": "SUBMITTED", "timestamp": current_timestamp}))
+    await pool.expire(status_key, expiration)
+    await pool.rpush('queue', json.dumps({"task_id": task_id, 
+                                          "content": task.content, 
+                                          "model": task.model,
+                                          "timestamp": current_timestamp}))
+    return {"task_id": task_id, "status": "SUBMITTED"}
+
+@app.get("/status/{task_id}")
+async def status(task_id: str):
+    task_status = await pool.hget(status_key, task_id)
+    if task_status is not None:
+        task_status = json.loads(task_status)
+        if task_status['status'] == "SUCCESS":
+            audio_file_path = await pool.hget(results_key, task_id)
+            if audio_file_path:
+                audio_file_path = audio_file_path.decode()
+                return StreamingResponse(open(audio_file_path, 'rb'), media_type="audio/wav")
+    return {
+        "task_id": task_id,
+        "status": task_status['status'] if task_status is not None else "UNKNOWN",
+    }
+
+async def worker():
+    while True:
+        try:
+          task = await pool.lpop('queue')
+          if task is not None:
+              logger.info(f"Received task: {task}")
+              task = json.loads(task)
+              task_id = task['task_id']
+              model = task['model']
+              content = task['content']
+              await pool.hset(status_key, task_id, json.dumps({"status": "PROCESSING", "timestamp": task['timestamp']}))
+              await pool.expire(status_key, expiration)
+              try:
+                  audio_file_path = await handleTask(model, content)
+                  await pool.hset(results_key, task_id, audio_file_path)
+                  await pool.hset(status_key, task_id, json.dumps({"status": "SUCCESS", "timestamp": task['timestamp']}))
+                  await pool.expire(status_key, expiration)
+              except Exception as e:
+                  logger.error(f"Error in worker: {e}")
+                  await pool.hset(status_key, task_id, json.dumps({"status": "FAILED", "timestamp": task['timestamp']}))
+                  await pool.expire(status_key, expiration)
+
+        except Exception as e:
+          logger.error(f"Error in worker: {e}")
+
+
+# Cleanup task to remove expired audio files
+async def cleanup():
+    while True:
+        now = time.time()
+        for file in os.listdir(tmp_dir):
+            file_path = os.path.join(tmp_dir, file)
+            if os.path.getmtime(file_path) < now - expiration:
+                os.remove(file_path)
+        await asyncio.sleep(expiration)  # Run the cleanup task every 24 hours
 
 
 if __name__ == "__main__":
