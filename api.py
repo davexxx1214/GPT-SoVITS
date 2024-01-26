@@ -247,9 +247,6 @@ def get_bert_feature(text, word2ph):
     return phone_level_feature.T
 
 def load_tts_model(gpt_path, sovits_path, device):
-  print('gpt path = ' + gpt_path)
-  print('gpt sovits_path = ' + sovits_path)
-
   n_semantic = 1024
   dict_s2 = torch.load(sovits_path, map_location="cpu")
   hps = dict_s2["config"]
@@ -265,7 +262,6 @@ def load_tts_model(gpt_path, sovits_path, device):
 
   hps = DictToAttrRecursive(hps)
   hps.model.semantic_frame_rate = "25hz"
-  
   dict_s1 = torch.load(gpt_path, map_location="cpu")
   config = dict_s1["config"]
   ssl_model = cnhubert.get_model()
@@ -273,8 +269,6 @@ def load_tts_model(gpt_path, sovits_path, device):
     ssl_model = ssl_model.half().to(device)
   else:
     ssl_model = ssl_model.to(device)
-
-  print("hps.data: ", hps.data)
 
   vq_model = SynthesizerTrn(
     hps.data.filter_length // 2 + 1,
@@ -292,7 +286,7 @@ def load_tts_model(gpt_path, sovits_path, device):
   t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
   t2s_model.load_state_dict(dict_s1["weight"])
   if is_half:
-      t2s_model = t2s_model.half()
+    t2s_model = t2s_model.half()
   t2s_model = t2s_model.to(device)
   t2s_model.eval()
   total = sum([param.nelement() for param in t2s_model.parameters()])
@@ -326,111 +320,85 @@ dict_language = {
 
 
 def get_tts_wav(gpt_path, sovits_path, ref_wav_path, prompt_text, prompt_language, text, text_language):
-    hps, ssl_model, vq_model, t2s_model, config, hz, max_sec = load_tts_model(gpt_path, sovits_path, device)
+  hps, ssl_model, vq_model, t2s_model, config, hz, max_sec = load_tts_model(gpt_path, sovits_path, device)
 
-    t0 = ttime()
-    prompt_text = prompt_text.strip("\n")
-    prompt_language, text = prompt_language, text.strip("\n")
-    zero_wav = np.zeros(int(hps.data.sampling_rate * 0.3), dtype=np.float16 if is_half == True else np.float32)
+  t0 = ttime()
+  prompt_text = prompt_text.strip("\n")
+  prompt_language, text = prompt_language, text.strip("\n")
+  zero_wav = np.zeros(int(hps.data.sampling_rate * 0.3), dtype=np.float16 if is_half == True else np.float32)
+  with torch.no_grad():
+      wav16k, sr = librosa.load(ref_wav_path, sr=16000)
+      wav16k = torch.from_numpy(wav16k)
+      zero_wav_torch = torch.from_numpy(zero_wav)
+      if (is_half == True):
+          wav16k = wav16k.half().to(device)
+          zero_wav_torch = zero_wav_torch.half().to(device)
+      else:
+          wav16k = wav16k.to(device)
+          zero_wav_torch = zero_wav_torch.to(device)
+      wav16k = torch.cat([wav16k, zero_wav_torch])
+      ssl_content = ssl_model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2)  # .float()
+      codes = vq_model.extract_latent(ssl_content)
+      prompt_semantic = codes[0, 0]
+  t1 = ttime()
+  prompt_language = dict_language[prompt_language]
+  text_language = dict_language[text_language]
+  phones1, word2ph1, norm_text1 = clean_text(prompt_text, prompt_language)
+  phones1 = cleaned_text_to_sequence(phones1)
+  texts = text.split("\n")
+  audio_opt = []
+  for text in texts:
+    phones2, word2ph2, norm_text2 = clean_text(text, text_language)
+    phones2 = cleaned_text_to_sequence(phones2)
+    if (prompt_language == "zh"):
+      bert1 = get_bert_feature(norm_text1, word2ph1).to(device)
+    else:
+      bert1 = torch.zeros((1024, len(phones1)), dtype=torch.float16 if is_half == True else torch.float32).to(
+        device)
+    if (text_language == "zh"):
+      bert2 = get_bert_feature(norm_text2, word2ph2).to(device)
+    else:
+      bert2 = torch.zeros((1024, len(phones2))).to(bert1)
+    bert = torch.cat([bert1, bert2], 1)
+
+    all_phoneme_ids = torch.LongTensor(phones1 + phones2).to(device).unsqueeze(0)
+    bert = bert.to(device).unsqueeze(0)
+    all_phoneme_len = torch.tensor([all_phoneme_ids.shape[-1]]).to(device)
+    prompt = prompt_semantic.unsqueeze(0).to(device)
+    t2 = ttime()
     with torch.no_grad():
-        wav16k, sr = librosa.load(ref_wav_path, sr=16000)
-        wav16k = torch.from_numpy(wav16k)
-        zero_wav_torch = torch.from_numpy(zero_wav)
-        if (is_half == True):
-            wav16k = wav16k.half().to(device)
-            zero_wav_torch = zero_wav_torch.half().to(device)
-        else:
-            wav16k = wav16k.to(device)
-            zero_wav_torch = zero_wav_torch.to(device)
-        wav16k = torch.cat([wav16k, zero_wav_torch])
-        ssl_content = ssl_model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2)  # .float()
-        codes = vq_model.extract_latent(ssl_content)
-        prompt_semantic = codes[0, 0]
-    t1 = ttime()
-    prompt_language = dict_language[prompt_language]
-    text_language = dict_language[text_language]
-    phones1, word2ph1, norm_text1 = clean_text(prompt_text, prompt_language)
-    phones1 = cleaned_text_to_sequence(phones1)
-    texts = text.split("\n")
-    audio_opt = []
-
-    for text in texts:
-        phones2, word2ph2, norm_text2 = clean_text(text, text_language)
-        phones2 = cleaned_text_to_sequence(phones2)
-        if (prompt_language == "zh"):
-            bert1 = get_bert_feature(norm_text1, word2ph1).to(device)
-        else:
-            bert1 = torch.zeros((1024, len(phones1)), dtype=torch.float16 if is_half == True else torch.float32).to(
-                device)
-        if (text_language == "zh"):
-            bert2 = get_bert_feature(norm_text2, word2ph2).to(device)
-        else:
-            bert2 = torch.zeros((1024, len(phones2))).to(bert1)
-        bert = torch.cat([bert1, bert2], 1)
-
-        all_phoneme_ids = torch.LongTensor(phones1 + phones2).to(device).unsqueeze(0)
-        bert = bert.to(device).unsqueeze(0)
-        all_phoneme_len = torch.tensor([all_phoneme_ids.shape[-1]]).to(device)
-        prompt = prompt_semantic.unsqueeze(0).to(device)
-        t2 = ttime()
-        with torch.no_grad():
-            # pred_semantic = t2s_model.model.infer(
-            pred_semantic, idx = t2s_model.model.infer_panel(
-                all_phoneme_ids,
-                all_phoneme_len,
-                prompt,
-                bert,
-                # prompt_phone_len=ph_offset,
-                top_k=config['inference']['top_k'],
-                early_stop_num=hz * max_sec)
-        t3 = ttime()
-        # print(pred_semantic.shape,idx)
-        pred_semantic = pred_semantic[:, -idx:].unsqueeze(0)  # .unsqueeze(0)#mq要多unsqueeze一次
-        refer = get_spepc(hps, ref_wav_path)  # .to(device)
-        if (is_half == True):
-            refer = refer.half().to(device)
-        else:
-            refer = refer.to(device)
-        # audio = vq_model.decode(pred_semantic, all_phoneme_ids, refer).detach().cpu().numpy()[0, 0]
-        audio = \
-            vq_model.decode(pred_semantic, torch.LongTensor(phones2).to(device).unsqueeze(0),
-                            refer).detach().cpu().numpy()[
-                0, 0]  ###试试重建不带上prompt部分
-        audio_opt.append(audio)
-        audio_opt.append(zero_wav)
-        t4 = ttime()
-    print("%.3f\t%.3f\t%.3f\t%.3f" % (t1 - t0, t2 - t1, t3 - t2, t4 - t3))
-    yield hps.data.sampling_rate, (np.concatenate(audio_opt, 0) * 32768).astype(np.int16)
+      # pred_semantic = t2s_model.model.infer(
+      pred_semantic, idx = t2s_model.model.infer_panel(
+        all_phoneme_ids,
+        all_phoneme_len,
+        prompt,
+        bert,
+        # prompt_phone_len=ph_offset,
+        top_k=config['inference']['top_k'],
+        early_stop_num=hz * max_sec)
+    t3 = ttime()
+    # print(pred_semantic.shape,idx)
+    pred_semantic = pred_semantic[:, -idx:].unsqueeze(0)  # .unsqueeze(0)#mq要多unsqueeze一次
+    refer = get_spepc(hps, ref_wav_path)  # .to(device)
+    if (is_half == True):
+      refer = refer.half().to(device)
+    else:
+      refer = refer.to(device)
+    # audio = vq_model.decode(pred_semantic, all_phoneme_ids, refer).detach().cpu().numpy()[0, 0]
+    audio = \
+      vq_model.decode(pred_semantic, torch.LongTensor(phones2).to(device).unsqueeze(0),
+                       refer).detach().cpu().numpy()[
+        0, 0]  ###试试重建不带上prompt部分
+    audio_opt.append(audio)
+    audio_opt.append(zero_wav)
+  t4 = ttime()
+  print("%.3f\t%.3f\t%.3f\t%.3f" % (t1 - t0, t2 - t1, t3 - t2, t4 - t3))
+  yield hps.data.sampling_rate, (np.concatenate(audio_opt, 0) * 32768).astype(np.int16)
 
 
-def handle_control(command):
-    if command == "restart":
-        os.execl(g_config.python_exec, g_config.python_exec, *sys.argv)
-    elif command == "exit":
-        os.kill(os.getpid(), signal.SIGTERM)
-        exit(0)
 
 
-def handle_change(path, text, language):
-    if is_empty(path, text, language):
-        return JSONResponse({"code": 400, "message": '缺少任意一项以下参数: "path", "text", "language"'}, status_code=400)
-
-    if path != "" or path is not None:
-        default_refer.path = path
-    if text != "" or text is not None:
-        default_refer.text = text
-    if language != "" or language is not None:
-        default_refer.language = language
-
-    print(f"[INFO] 当前默认参考音频路径: {default_refer.path}")
-    print(f"[INFO] 当前默认参考音频文本: {default_refer.text}")
-    print(f"[INFO] 当前默认参考音频语种: {default_refer.language}")
-    print(f"[INFO] is_ready: {default_refer.is_ready()}")
-
-    return JSONResponse({"code": 0, "message": "Success"}, status_code=200)
-
-
-def handle(gpt_path, sovits_path, refer_wav_path, prompt_text, prompt_language, text, text_language):
+def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_language, text, text_language):
     if (
             refer_wav_path == "" or refer_wav_path is None
             or prompt_text == "" or prompt_text is None
