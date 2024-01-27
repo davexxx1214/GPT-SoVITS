@@ -110,8 +110,9 @@ from time import time as ttime
 import torch
 import librosa
 import soundfile as sf
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
+
 import uvicorn
 from transformers import AutoModelForMaskedLM, AutoTokenizer
 import numpy as np
@@ -131,6 +132,7 @@ import shutil
 import uuid
 from datetime import timedelta
 from typing import Optional
+from typing import List
 from pydantic import BaseModel
 from aioredis import Redis
 import time
@@ -155,6 +157,8 @@ pool = None
 status_key = "status"
 results_key = "results"
 expiration = 24 * 60 * 60  # Expire after 24 hours
+keys_count = {}
+auth_keys = []
 
 tmp_dir = "/tmp/audio_files"
 
@@ -167,6 +171,11 @@ g_config = global_config.Config()
 
 with open('config.json', 'r') as f:
     local_config = json.load(f)
+model_list =  local_config['model_list']
+
+with open('auth_keys.txt', 'r') as f:
+    auth_keys = [line.strip() for line in f.readlines()]
+
 
 # AVAILABLE_COMPUTE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -462,6 +471,29 @@ async def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_lang
 
 app = FastAPI()
 
+def valid_auth_key(auth_key: str = Header(...)):  # Use depends to validate and count auth_key
+    if not auth_key.startswith('Bearer '):
+        raise HTTPException(status_code=400, detail='Invalid token schema')
+    
+    key = auth_key.split(' ')[1]
+    if key not in auth_keys:
+        raise HTTPException(status_code=401, detail='Invalid key')
+
+    # Load existing key counts from file
+    if os.path.exists('keys_count.txt'):
+        with open('keys_count.txt', 'r') as f:
+            keys_count = json.loads(f.read())
+    else:
+        keys_count = {}
+
+    # Increment key count and save back to file
+    keys_count[key] = keys_count.get(key, 0) + 1
+
+    with open('keys_count.txt', 'w') as f: 
+        f.write(json.dumps(keys_count))
+
+    return key
+
 
 def handle_control(command):
     if command == "restart":
@@ -470,54 +502,10 @@ def handle_control(command):
         os.kill(os.getpid(), signal.SIGTERM)
         exit(0)
 
-
-def handle_change(path, text, language):
-    if is_empty(path, text, language):
-        return JSONResponse({"code": 400, "message": '缺少任意一项以下参数: "path", "text", "language"'}, status_code=400)
-
-    if path != "" or path is not None:
-        default_refer.path = path
-    if text != "" or text is not None:
-        default_refer.text = text
-    if language != "" or language is not None:
-        default_refer.language = language
-
-    print(f"[INFO] 当前默认参考音频路径: {default_refer.path}")
-    print(f"[INFO] 当前默认参考音频文本: {default_refer.text}")
-    print(f"[INFO] 当前默认参考音频语种: {default_refer.language}")
-    print(f"[INFO] is_ready: {default_refer.is_ready()}")
-
-    return JSONResponse({"code": 0, "message": "Success"}, status_code=200)
-
 @app.post("/control")
 async def control(request: Request):
     json_post_raw = await request.json()
     return handle_control(json_post_raw.get("command"))
-
-
-@app.get("/control")
-async def control(command: str = None):
-    return handle_control(command)
-
-
-@app.post("/change_refer")
-async def change_refer(request: Request):
-    json_post_raw = await request.json()
-    return handle_change(
-        json_post_raw.get("refer_wav_path"),
-        json_post_raw.get("prompt_text"),
-        json_post_raw.get("prompt_language")
-    )
-
-
-@app.get("/change_refer")
-async def change_refer(
-        refer_wav_path: str = None,
-        prompt_text: str = None,
-        prompt_language: str = None
-):
-    return handle_change(refer_wav_path, prompt_text, prompt_language)
-
 
 @app.post("/")
 async def tts_endpoint(request: Request):
@@ -536,7 +524,7 @@ async def tts_endpoint(request: Request):
     return result
 
 
-@app.get("/")
+@app.get("/model_list")
 async def tts_endpoint(
 ):
     model_list =  local_config['model_list']
@@ -595,9 +583,15 @@ async def shutdown():
     await pool.close()
 
 @app.post("/task")
-async def get_task_id(task: Task):
+async def get_task_id(task: Task, key: str = Depends(valid_auth_key)):
+    if task.model not in model_list:
+        raise HTTPException(status_code=400, detail='Invalid model')
+
+    if len(task.content) > 100:
+        raise HTTPException(status_code=400, detail='Content too long')
+    
     task_id = str(uuid.uuid4())
-    current_timestamp = time.time()  # Get current UNIX timestamp
+    current_timestamp = time.time()
     await pool.hset(status_key, task_id, json.dumps({"status": "SUBMITTED", "timestamp": current_timestamp}))
     await pool.expire(status_key, expiration)
     await pool.rpush('queue', json.dumps({"task_id": task_id, 
