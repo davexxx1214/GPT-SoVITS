@@ -135,29 +135,39 @@ from typing import Optional
 from typing import List
 from pydantic import BaseModel
 from aioredis import Redis
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 import time
 import aiofiles
 import logging
 
+# 定义一个锁，用于同步对 keys_count 的访问
+keys_count_lock = asyncio.Lock()
+
+log_file_path = 'api.log'
+
+# 配置日志系统，将日志输出到文件
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    filename=log_file_path,  # 日志文件路径
+    filemode='a'  # 文件打开模式，'a' 代表追加，'w' 代表覆写
+)
+
+# 创建日志记录器
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
-# Create handlers
-c_handler = logging.StreamHandler()
-c_handler.setLevel(logging.INFO)
+# 测试日志输出，信息将被写入到文件中
+logger.info("信息将被记录到日志文件中。")
 
-# Create formatters and add it to handlers
-c_format = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
-c_handler.setFormatter(c_format)
-
-# Add handlers to the logger
-logger.addHandler(c_handler)
 
 pool = None
 status_key = "status"
 results_key = "results"
 expiration = 24 * 60 * 60  # Expire after 24 hours
 keys_count = {}
+keys_count_backup = {}
 auth_keys = []
 
 tmp_dir = "/tmp/audio_files"
@@ -479,33 +489,7 @@ def valid_auth_key(auth_key: str = Header(...)):  # Use depends to validate and 
     if key not in auth_keys:
         raise HTTPException(status_code=401, detail='Invalid key')
 
-    # Load existing key counts from file
-    if os.path.exists('keys_count.txt'):
-        with open('keys_count.txt', 'r') as f:
-            keys_count = json.loads(f.read())
-    else:
-        keys_count = {}
-
-    # Increment key count and save back to file
-    keys_count[key] = keys_count.get(key, 0) + 1
-
-    with open('keys_count.txt', 'w') as f: 
-        f.write(json.dumps(keys_count))
-
     return key
-
-
-def handle_control(command):
-    if command == "restart":
-        os.execl(g_config.python_exec, g_config.python_exec, *sys.argv)
-    elif command == "exit":
-        os.kill(os.getpid(), signal.SIGTERM)
-        exit(0)
-
-@app.post("/control")
-async def control(request: Request):
-    json_post_raw = await request.json()
-    return handle_control(json_post_raw.get("command"))
 
 @app.post("/")
 async def tts_endpoint(request: Request):
@@ -568,6 +552,8 @@ async def handleTask(model: str, content: str):
 @app.on_event("startup")
 async def startup():
     global pool
+    global keys_count_lock
+    keys_count_lock = asyncio.Lock()
     try:
         pool = Redis.from_url("redis://localhost")
         logger.info("Connected to Redis")
@@ -576,28 +562,82 @@ async def startup():
     os.makedirs(tmp_dir, exist_ok=True)
     asyncio.create_task(worker())
     asyncio.create_task(cleanup())
+    ##启动定时器，每10分钟更新一次key的调用次数
+    sched = AsyncIOScheduler()
+    sched.add_job(update_keys_usage, IntervalTrigger(minutes=10))
+    sched.start()
 
 
 @app.on_event("shutdown")
 async def shutdown():
     await pool.close()
 
+async def save_key_usage_to_redis():
+    async with keys_count_lock:
+        global keys_count_backup
+
+        # 保存每个key的计数到 Redis，并在本地备份再重置内存中的计数
+        for key, count in keys_count.items():
+            current_count = await pool.get(key) or 0
+            await pool.set(key, int(current_count) + count)
+        
+        # 更新备份数据并清空原计数容器
+        keys_count_backup = keys_count.copy()
+        keys_count.clear()
+
+async def update_keys_usage():
+    async with keys_count_lock:
+        global keys_count_backup
+
+        # 如果备份为空，意味着自上次更新以来没有新的计数
+        if not keys_count_backup:
+            logger.warning("No keys to update found. 'keys_count_backup' is empty.")
+            return
+
+        # 从备份获取键的当前计数
+        keys_to_update = {}
+        for key in keys_count_backup:
+            current_count = await pool.get(key) or 0
+            keys_to_update[key] = int(current_count)
+        
+        if keys_to_update:
+            logger.info(f"Number of keys to update: {len(keys_to_update)}.")
+            with open('keys_count.txt', 'w') as f:
+                json.dump(keys_to_update, f)
+            logger.info("keys_count.txt file updated with Redis key usage.")
+        else:
+            logger.warning("No keys were found to update in 'keys_count_backup'.")
+        
+        # 在完成更新后清空备份
+        keys_count_backup.clear()
+
 @app.post("/task")
 async def get_task_id(task: Task, key: str = Depends(valid_auth_key)):
+    start_time = time.perf_counter()  # Start a timer to measure the request handling time
+    logger.info("Task submission started.")
     if task.model not in model_list:
         raise HTTPException(status_code=400, detail='Invalid model')
 
     if len(task.content) > 100:
         raise HTTPException(status_code=400, detail='Content too long')
-    
+
     task_id = str(uuid.uuid4())
     current_timestamp = time.time()
+
     await pool.hset(status_key, task_id, json.dumps({"status": "SUBMITTED", "timestamp": current_timestamp}))
     await pool.expire(status_key, expiration)
     await pool.rpush('queue', json.dumps({"task_id": task_id, 
-                                          "content": task.content, 
+                                          "content": task.content,
                                           "model": task.model,
                                           "timestamp": current_timestamp}))
+    async with keys_count_lock:
+        logger.info("Lock acquired.")
+        keys_count[key] = keys_count.get(key, 0) + 1
+
+    await save_key_usage_to_redis()
+
+    end_time = time.perf_counter()  # Stop the timer after all operations are complete
+    logger.info(f"Task submission completed in {end_time - start_time:.4f} seconds.")
     return {"task_id": task_id, "status": "SUBMITTED"}
 
 @app.get("/status/{task_id}")
