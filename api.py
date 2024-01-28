@@ -616,10 +616,10 @@ async def get_task_id(task: Task, key: str = Depends(valid_auth_key)):
     start_time = time.perf_counter()  # Start a timer to measure the request handling time
     logger.info("Task submission started.")
     if task.model not in model_list:
-        raise HTTPException(status_code=400, detail='Invalid model')
+        raise HTTPException(status_code=400, detail='错误的模型名称')
 
     if len(task.content) > 100:
-        raise HTTPException(status_code=400, detail='Content too long')
+        raise HTTPException(status_code=400, detail='转换文本太长,超过100个字限制')
 
     task_id = str(uuid.uuid4())
     current_timestamp = time.time()
