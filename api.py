@@ -640,7 +640,7 @@ async def get_task_id(task: Task, key: str = Depends(valid_auth_key)):
     logger.info(f"Task submission completed in {end_time - start_time:.4f} seconds.")
     return {"task_id": task_id, "status": "SUBMITTED"}
 
-@app.get("/status/{task_id}")
+@app.get("/task/{task_id}")
 async def status(task_id: str):
     task_status = await pool.hget(status_key, task_id)
     if task_status is not None:
