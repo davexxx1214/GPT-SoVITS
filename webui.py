@@ -16,7 +16,11 @@ if(os.path.exists(tmp)):
         if(name=="jieba.cache"):continue
         path="%s/%s"%(tmp,name)
         delete=os.remove if os.path.isfile(path) else shutil.rmtree
-        delete(path)
+        try:
+            delete(path)
+        except Exception as e:
+            print(str(e))
+            pass
 import site
 site_packages_roots = []
 for path in site.getsitepackages():
@@ -25,13 +29,18 @@ for path in site.getsitepackages():
 if(site_packages_roots==[]):site_packages_roots=["%s/runtime/Lib/site-packages" % now_dir]
 #os.environ["OPENBLAS_NUM_THREADS"] = "4"
 os.environ["no_proxy"] = "localhost, 127.0.0.1, ::1"
+os.environ["all_proxy"] = ""
 for site_packages_root in site_packages_roots:
     if os.path.exists(site_packages_root):
-        with open("%s/users.pth" % (site_packages_root), "w") as f:
-            f.write(
-                "%s\n%s/tools\n%s/tools/damo_asr\n%s/GPT_SoVITS\n%s/tools/uvr5"
-                % (now_dir, now_dir, now_dir, now_dir, now_dir)
-            )
+        try:
+            with open("%s/users.pth" % (site_packages_root), "w") as f:
+                f.write(
+                    "%s\n%s/tools\n%s/tools/damo_asr\n%s/GPT_SoVITS\n%s/tools/uvr5"
+                    % (now_dir, now_dir, now_dir, now_dir, now_dir)
+                )
+            break
+        except PermissionError:
+            pass
 from tools import my_utils
 import traceback
 import shutil
@@ -212,6 +221,9 @@ def open1Ba(batch_size,total_epoch,exp_name,text_low_lr_rate,if_save_latest,if_s
             data=json.loads(data)
         s2_dir="%s/%s"%(exp_root,exp_name)
         os.makedirs("%s/logs_s2"%(s2_dir),exist_ok=True)
+        if(is_half==False):
+            data["train"]["fp16_run"]=False
+            batch_size=max(1,batch_size//2)
         data["train"]["batch_size"]=batch_size
         data["train"]["epochs"]=total_epoch
         data["train"]["text_low_lr_rate"]=text_low_lr_rate
@@ -224,7 +236,7 @@ def open1Ba(batch_size,total_epoch,exp_name,text_low_lr_rate,if_save_latest,if_s
         data["data"]["exp_dir"]=data["s2_ckpt_dir"]=s2_dir
         data["save_weight_dir"]=SoVITS_weight_root
         data["name"]=exp_name
-        tmp_config_path="TEMP/tmp_s2.json"
+        tmp_config_path="%s/tmp_s2.json"%tmp
         with open(tmp_config_path,"w")as f:f.write(json.dumps(data))
 
         cmd = '"%s" GPT_SoVITS/s2_train.py --config "%s"'%(python_exec,tmp_config_path)
@@ -253,6 +265,9 @@ def open1Bb(batch_size,total_epoch,exp_name,if_save_latest,if_save_every_weights
             data=yaml.load(data, Loader=yaml.FullLoader)
         s1_dir="%s/%s"%(exp_root,exp_name)
         os.makedirs("%s/logs_s1"%(s1_dir),exist_ok=True)
+        if(is_half==False):
+            data["train"]["precision"]="32"
+            batch_size = max(1, batch_size // 2)
         data["train"]["batch_size"]=batch_size
         data["train"]["epochs"]=total_epoch
         data["pretrained_s1"]=pretrained_s1
@@ -267,7 +282,7 @@ def open1Bb(batch_size,total_epoch,exp_name,if_save_latest,if_save_every_weights
 
         os.environ["_CUDA_VISIBLE_DEVICES"]=gpu_numbers.replace("-",",")
         os.environ["hz"]="25hz"
-        tmp_config_path="TEMP/tmp_s1.yaml"
+        tmp_config_path="%s/tmp_s1.yaml"%tmp
         with open(tmp_config_path, "w") as f:f.write(yaml.dump(data, default_flow_style=False))
         # cmd = '"%s" GPT_SoVITS/s1_train.py --config_file "%s" --train_semantic_path "%s/6-name2semantic.tsv" --train_phoneme_path "%s/2-name2text.txt" --output_dir "%s/logs_s1"'%(python_exec,tmp_config_path,s1_dir,s1_dir,s1_dir)
         cmd = '"%s" GPT_SoVITS/s1_train.py --config_file "%s" '%(python_exec,tmp_config_path)
@@ -655,7 +670,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
             with gr.Row():
                 if_label = gr.Checkbox(label=i18n("是否开启打标WebUI"),show_label=True)
                 path_list = gr.Textbox(
-                    label=i18n("打标数据标注文件路径"),
+                    label=i18n(".list标注文件的路径"),
                     value="D:\\RVC1006\\GPT-SoVITS\\raw\\xxx.list",
                     interactive=True,
                 )
@@ -681,7 +696,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
                         label=i18n("*训练集音频文件目录"),
                         # value=r"D:\RVC1006\GPT-SoVITS\raw\xxx",
                         interactive=True,
-                        placeholder=i18n("训练集音频文件目录-拼接-list文件里波形对应的文件名（不是全路径）。")
+                        placeholder=i18n("填切割后音频所在目录！读取的音频文件完整路径=该目录-拼接-list文件里波形对应的文件名（不是全路径）。")
                     )
                 gr.Markdown(value=i18n("1Aa-文本内容"))
                 with gr.Row():

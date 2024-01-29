@@ -9,7 +9,7 @@
 <img src="https://counter.seku.su/cmoe?name=gptsovits&theme=r34" /><br>
 
 [![Licence](https://img.shields.io/badge/LICENSE-MIT-green.svg?style=for-the-badge)](https://github.com/RVC-Boss/GPT-SoVITS/blob/main/LICENSE)
-[![Huggingface](https://img.shields.io/badge/🤗%20-Spaces-yellow.svg?style=for-the-badge)](https://huggingface.co/lj1995/GPT-SoVITS/tree/main)
+[![Huggingface](https://img.shields.io/badge/🤗%20-Models%20Repo-yellow.svg?style=for-the-badge)](https://huggingface.co/lj1995/GPT-SoVITS/tree/main)
 
 [**English**](./README.md) | [**中文简体**](./README_ZH.md)
 
@@ -43,12 +43,19 @@ https://github.com/RVC-Boss/GPT-SoVITS/assets/129054828/05bee1fa-bdd8-4d85-9350-
 
 - Python 3.9、PyTorch 2.0.1和CUDA 11
 - Python 3.10.13, PyTorch 2.1.2和CUDA 12.3
-- Python 3.9、Pytorch 2.3.0.dev20240122和macOS 14.3（Apple 芯片，MPS）
+- Python 3.9、Pytorch 2.3.0.dev20240122和macOS 14.3（Apple 芯片，GPU）
 
 _注意: numba==0.56.4 需要 python<3.11_
 
 ### Mac 用户
-如果你是Mac用户，请使用以下命令安装：
+如果你是Mac用户，请先确保满足以下条件以使用GPU进行训练和推理：
+- 搭载Apple芯片或AMD GPU的Mac
+- macOS 12.3或更高版本
+- 已通过运行`xcode-select --install`安装Xcode command-line tools
+
+_其他Mac仅支持使用CPU进行推理_
+
+然后使用以下命令安装：
 #### 创建环境
 ```bash
 conda create -n GPTSoVits python=3.9
@@ -60,7 +67,7 @@ pip install -r requirements.txt
 pip uninstall torch torchaudio
 pip3 install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cpu
 ```
-_注意：如需使用UVR5进行预处理，建议[下载原项目GUI](https://github.com/Anjok07/ultimatevocalremovergui)，勾选GPU运行。另外，使用Mac推理时可能存在内存泄漏问题，重启推理UI即可释放内存。_
+_注意：如需使用UVR5进行预处理，建议[下载原项目GUI](https://github.com/Anjok07/ultimatevocalremovergui)，勾选“GPU Conversion”。另外，可能会出现内存泄漏问题，主要体现在推理时。重启推理webUI可以释放内存。_
 ### 使用Conda快速安装
 
 ```bash
@@ -103,7 +110,7 @@ brew install ffmpeg
 ### 在 Docker 中使用
 
 #### docker-compose.yaml 设置
-
+0. image的标签：由于代码库更新很快，镜像的打包和测试又很慢，所以请自行在 [Docker Hub](https://hub.docker.com/r/breakstring/gpt-sovits) 查看当前打包好的最新的镜像并根据自己的情况选用，或者在本地根据您自己的需求通过Dockerfile进行构建。
 1. 环境变量：
   - is_half: 半精度/双精度控制。在进行 "SSL extracting" 步骤时如果无法正确生成 4-cnhubert/5-wav32k 目录下的内容时，一般都是它引起的，可以根据实际情况来调整为True或者False。
 
@@ -122,7 +129,7 @@ docker compose -f "docker-compose.yaml" up -d
 
 同上，根据您自己的实际情况修改对应的参数，然后运行如下命令：
 ```
-docker run --rm -it --gpus=all --env=is_half=False --volume=G:\GPT-SoVITS-DockerTest\output:/workspace/output --volume=G:\GPT-SoVITS-DockerTest\logs:/workspace/logs --volume=G:\GPT-SoVITS-DockerTest\SoVITS_weights:/workspace/SoVITS_weights --workdir=/workspace -p 9870:9870 -p 9871:9871 -p 9872:9872 -p 9873:9873 -p 9874:9874 --shm-size="16G" -d breakstring/gpt-sovits:dev-20240123.03
+docker run --rm -it --gpus=all --env=is_half=False --volume=G:\GPT-SoVITS-DockerTest\output:/workspace/output --volume=G:\GPT-SoVITS-DockerTest\logs:/workspace/logs --volume=G:\GPT-SoVITS-DockerTest\SoVITS_weights:/workspace/SoVITS_weights --workdir=/workspace -p 9870:9870 -p 9871:9871 -p 9872:9872 -p 9873:9873 -p 9874:9874 --shm-size="16G" -d breakstring/gpt-sovits:xxxxx
 ```
 
 
