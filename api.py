@@ -641,7 +641,7 @@ async def get_task_id(task: Task, key: str = Depends(valid_auth_key)):
     return {"task_id": task_id, "status": "SUBMITTED"}
 
 @app.get("/task/{task_id}")
-async def status(task_id: str):
+async def status(task_id: str, key: str = Depends(valid_auth_key)):
     task_status = await pool.hget(status_key, task_id)
     if task_status is not None:
         task_status = json.loads(task_status)
