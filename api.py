@@ -476,6 +476,9 @@ async def handle(sovits_path, gpt_path, refer_wav_path, prompt_text, prompt_lang
 
     torch.cuda.empty_cache()
     # torch.mps.empty_cache()
+    if device == "mps":
+        print('executed torch.mps.empty_cache()')
+        torch.mps.empty_cache()
     return StreamingResponse(wav, media_type="audio/wav")
 
 
@@ -491,63 +494,10 @@ def valid_auth_key(auth_key: str = Header(...)):  # Use depends to validate and 
 
     return key
 
-@app.post("/")
-async def tts_endpoint(request: Request):
-    json_post_raw = await request.json()
-
-    model_list =  local_config['model_list']
-    model = json_post_raw.get("model")
-    if model not in model_list:
-        model = 'default'
-    
-    text = json_post_raw.get("text")
-
-    print('text = ' + text)
-
-    result = await handleTask(model, text)
-    return result
-
-
 @app.get("/model_list")
-async def tts_endpoint(
-):
+async def tts_endpoint(key: str = Depends(valid_auth_key)):
     model_list =  local_config['model_list']
     return model_list
-
-async def handleTask(model: str, content: str):
-    model_list =  local_config['model_list']
-    if model not in model_list:
-        model = 'default'
-
-    model_root_path = local_config['model_root_path']
-    prompt_text_path = f"{model_root_path}/{model}/{model}.txt"
-    refer_wav_path = f"{model_root_path}/{model}/{model}.wav"
-    sovits_path = f"{model_root_path}/{model}/{model}.pth"
-    gpt_path = f"{model_root_path}/{model}/{model}.ckpt"
-    print('content = ' + content)
-    text = content
-
-    with open(prompt_text_path, 'r',  encoding='utf-8') as file:
-        prompt_text = file.read()
-    prompt_language = 'zh'
-    text_language = 'zh'
-
-    response =  await handle(
-        sovits_path,
-        gpt_path,
-        refer_wav_path,
-        prompt_text,
-        prompt_language,
-        text,
-        text_language,
-    )
-    if isinstance(response, StreamingResponse):
-      audio_file_path = os.path.join(tmp_dir, f"{uuid.uuid4()}.wav")
-      async with aiofiles.open(audio_file_path, 'wb') as out_file:
-          async for data in response.body_iterator:
-              await out_file.write(data)
-    
-    return audio_file_path
 
 @app.on_event("startup")
 async def startup():
@@ -610,6 +560,41 @@ async def update_keys_usage():
         
         # 在完成更新后清空备份
         keys_count_backup.clear()
+
+async def handleTask(model: str, content: str):
+    model_list =  local_config['model_list']
+    if model not in model_list:
+        model = 'default'
+
+    model_root_path = local_config['model_root_path']
+    prompt_text_path = f"{model_root_path}/{model}/{model}.txt"
+    refer_wav_path = f"{model_root_path}/{model}/{model}.wav"
+    sovits_path = f"{model_root_path}/{model}/{model}.pth"
+    gpt_path = f"{model_root_path}/{model}/{model}.ckpt"
+    print('content = ' + content)
+    text = content
+
+    with open(prompt_text_path, 'r',  encoding='utf-8') as file:
+        prompt_text = file.read()
+    prompt_language = 'zh'
+    text_language = 'zh'
+
+    response =  await handle(
+        sovits_path,
+        gpt_path,
+        refer_wav_path,
+        prompt_text,
+        prompt_language,
+        text,
+        text_language,
+    )
+    if isinstance(response, StreamingResponse):
+      audio_file_path = os.path.join(tmp_dir, f"{uuid.uuid4()}.wav")
+      async with aiofiles.open(audio_file_path, 'wb') as out_file:
+          async for data in response.body_iterator:
+              await out_file.write(data)
+    
+    return audio_file_path
 
 @app.post("/task")
 async def get_task_id(task: Task, key: str = Depends(valid_auth_key)):
