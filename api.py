@@ -110,7 +110,7 @@ from time import time as ttime
 import torch
 import librosa
 import soundfile as sf
-from fastapi import FastAPI, Request, HTTPException, Header, Depends
+from fastapi import FastAPI, Request, HTTPException, Header, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse, JSONResponse
 
 import uvicorn
@@ -637,7 +637,7 @@ async def get_task_id(task: Task, key: str = Depends(valid_auth_key)):
     await save_key_usage_to_redis()
 
     end_time = time.perf_counter()  # Stop the timer after all operations are complete
-    logger.info(f"Task submission completed in {end_time - start_time:.4f} seconds.")
+    print(f"Task submission completed in {end_time - start_time:.4f} seconds.")
     return {"task_id": task_id, "status": "SUBMITTED"}
 
 @app.get("/task/{task_id}")
@@ -665,28 +665,35 @@ async def file_generator(filename):
 
 async def worker():
     while True:
-        try:
-          task = await pool.lpop('queue')
-          if task is not None:
-              logger.info(f"Received task: {task}")
-              task = json.loads(task)
-              task_id = task['task_id']
-              model = task['model']
-              content = task['content']
-              await pool.hset(status_key, task_id, json.dumps({"status": "PROCESSING", "timestamp": task['timestamp']}))
-              await pool.expire(status_key, expiration)
-              try:
-                  audio_file_path = await handleTask(model, content)
-                  await pool.hset(results_key, task_id, audio_file_path)
-                  await pool.hset(status_key, task_id, json.dumps({"status": "SUCCESS", "timestamp": task['timestamp']}))
-                  await pool.expire(status_key, expiration)
-              except Exception as e:
-                  logger.error(f"Error in worker: {e}")
-                  await pool.hset(status_key, task_id, json.dumps({"status": "FAILED", "timestamp": task['timestamp']}))
-                  await pool.expire(status_key, expiration)
+        task = await pool.lpop('queue')
+        if task:
+            task = json.loads(task)
+            task_id = task['task_id']
+            
+            # 将耗时操作放到后台任务中去执行，不阻塞worker循环
+            asyncio.create_task(process_task(task_id, task['model'], task['content']))
 
-        except Exception as e:
-          logger.error(f"Error in worker: {e}")
+        # 适当的间隔或者使用 asyncio.sleep 来避免忙等
+        await asyncio.sleep(1)
+
+async def process_task(task_id: str, model: str, content: str):
+    try:
+        logger.info(f"Processing task {task_id}")
+        await pool.hset(status_key, task_id, json.dumps({"status": "PROCESSING", "timestamp": time.time()}))
+        await pool.expire(status_key, expiration)
+
+        # 执行耗时的任务
+        audio_file_path = await handleTask(model, content)
+
+        # 任务完成后更新状态和结果
+        await pool.hset(results_key, task_id, audio_file_path)
+        await pool.hset(status_key, task_id, json.dumps({"status": "SUCCESS", "timestamp": time.time()}))
+    except Exception as e:
+        logger.error(f"Error processing task {task_id}: {e}")
+        await pool.hset(status_key, task_id, json.dumps({"status": "FAILED", "timestamp": time.time()}))
+
+    # 最后要设置过期
+    await pool.expire(status_key, expiration)
 
 
 # Cleanup task to remove expired audio files
