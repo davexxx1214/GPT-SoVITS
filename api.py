@@ -649,11 +649,19 @@ async def status(task_id: str, key: str = Depends(valid_auth_key)):
             audio_file_path = await pool.hget(results_key, task_id)
             if audio_file_path:
                 audio_file_path = audio_file_path.decode()
-                return StreamingResponse(open(audio_file_path, 'rb'), media_type="audio/wav")
+                return StreamingResponse(file_generator(audio_file_path), media_type="audio/wav")
     return {
         "task_id": task_id,
         "status": task_status['status'] if task_status is not None else "UNKNOWN",
     }
+
+async def file_generator(filename):
+    async with aiofiles.open(filename, mode='rb') as file:
+        while True:
+            chunk = await file.read(4096)  # Or any other chunk size
+            if not chunk:
+                break
+            yield chunk
 
 async def worker():
     while True:
