@@ -175,7 +175,13 @@ tmp_dir = "/tmp/audio_files"
 class Task(BaseModel):
     model: str
     content: str
-    timestamp: Optional[float]
+    timestamp: float = None  # 初始化为 None
+
+    # 使用 Pydantic 的构造函数来添加默认的当前时间戳
+    def __init__(__pydantic_self__, **data):
+        if 'timestamp' not in data:
+            data['timestamp'] = time.time()
+        super().__init__(**data)
 
 g_config = global_config.Config()
 
