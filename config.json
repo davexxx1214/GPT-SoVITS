@@ -1,4 +1,4 @@
 {
     "model_root_path" : "GPT_SoVITS/pretrained_models",
-    "model_list" : ["default","leidianjiangjun","leijun", "liudehua","linzhiling","guodegang","labixiaoxin","luoyonghao","sunli"]
+    "model_list" : ["default","leidianjiangjun","leijun", "liudehua","linzhiling","guodegang","labixiaoxin","luoyonghao","sunli","fanhua-lili","fanhua-wangxiaojie","fanhua-yeshu","fanhua-baozong","fanhua-fanye"]
 }
