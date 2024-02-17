@@ -22,3 +22,7 @@ PyYAML
 psutil
 jieba_fast
 jieba
+aioredis 
+aioredis-lock 
+apscheduler 
+aiofiles
