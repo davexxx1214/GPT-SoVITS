@@ -582,6 +582,7 @@ async def handleTask(model: str, content: str):
     refer_wav_path = f"{model_root_path}/{model}/{model}.wav"
     sovits_path = f"{model_root_path}/{model}/{model}.pth"
     gpt_path = f"{model_root_path}/{model}/{model}.ckpt"
+    print('model = ' + model)
     print('content = ' + content)
     text = content
 
