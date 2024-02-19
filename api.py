@@ -671,7 +671,7 @@ async def worker():
             asyncio.create_task(process_task(task_id, task['model'], task['content']))
 
         # 适当的间隔或者使用 asyncio.sleep 来避免忙等
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
 
 async def process_task(task_id: str, model: str, content: str):
     try:
