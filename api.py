@@ -604,9 +604,53 @@ async def handleTask(model: str, content: str):
       audio_file_path = os.path.join(tmp_dir, f"{uuid.uuid4()}.wav")
       async with aiofiles.open(audio_file_path, 'wb') as out_file:
           async for data in response.body_iterator:
-              await out_file.write(data)
+              await out_file.write(data) 
     
     return audio_file_path
+
+@app.post("/convert")
+async def tts_endpoint(task: Task, key: str = Depends(valid_auth_key)):
+    model_list =  local_config['model_list']
+
+    if task.model not in model_list:
+        raise HTTPException(status_code=400, detail='错误的模型名称')
+
+    if len(task.content) > 100:
+        raise HTTPException(status_code=400, detail='转换文本太长,超过100个字限制')
+
+    model = task.model
+    content = task.content
+
+    model_root_path = local_config['model_root_path']
+    prompt_text_path = f"{model_root_path}/{model}/{model}.txt"
+    refer_wav_path = f"{model_root_path}/{model}/{model}.wav"
+    sovits_path = f"{model_root_path}/{model}/{model}.pth"
+    gpt_path = f"{model_root_path}/{model}/{model}.ckpt"
+    print('model = ' + model)
+    print('content = ' + content)
+    text = content
+
+    with open(prompt_text_path, 'r',  encoding='utf-8') as file:
+        prompt_text = file.read()
+    prompt_language = 'zh'
+    text_language = 'zh'
+
+    async with keys_count_lock:
+        logger.info("Lock acquired.")
+        keys_count[key] = keys_count.get(key, 0) + 1
+
+    await save_key_usage_to_redis()
+
+    result = await handle(
+        sovits_path,
+        gpt_path,
+        refer_wav_path,
+        prompt_text,
+        prompt_language,
+        text,
+        text_language,
+    )
+    return result
 
 @app.post("/task")
 async def get_task_id(task: Task, key: str = Depends(valid_auth_key)):
