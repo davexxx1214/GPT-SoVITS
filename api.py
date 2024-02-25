@@ -615,8 +615,8 @@ async def tts_endpoint(task: Task, key: str = Depends(valid_auth_key)):
     if task.model not in model_list:
         raise HTTPException(status_code=400, detail='错误的模型名称')
 
-    if len(task.content) > 100:
-        raise HTTPException(status_code=400, detail='转换文本太长,超过100个字限制')
+    if len(task.content) > 200:
+        raise HTTPException(status_code=400, detail='转换文本太长,超过200个字限制')
 
     model = task.model
     content = task.content
@@ -659,8 +659,8 @@ async def get_task_id(task: Task, key: str = Depends(valid_auth_key)):
     if task.model not in model_list:
         raise HTTPException(status_code=400, detail='错误的模型名称')
 
-    if len(task.content) > 100:
-        raise HTTPException(status_code=400, detail='转换文本太长,超过100个字限制')
+    if len(task.content) > 200:
+        raise HTTPException(status_code=400, detail='转换文本太长,超过200个字限制')
 
     task_id = str(uuid.uuid4())
     current_timestamp = time.time()
