@@ -1,4 +1,4 @@
 {
     "model_root_path" : "GPT_SoVITS/pretrained_models",
-    "model_list" : ["default","leidianjiangjun","leijun", "liudehua","linzhiling","guodegang","labixiaoxin","luoyonghao","sunli","fanhua-lili","fanhua-wangxiaojie","fanhua-yeshu","fanhua-baozong","fanhua-fanye","yuanshen-bachong","yuanshen-beidou","yuanshen-falushan","yuanshen-ganyu","yuanshen-linghua","yuanshen-luosha","yuanshen-nilu","yuanshen-nuoaier","yuanshen-ying","yuanshen-youla"]
+    "model_list" : ["default","leidianjiangjun","leijun", "liudehua","linzhiling","guodegang","labixiaoxin","sunli","fanhua-lili","fanhua-yeshu","fanhua-baozong","fanhua-fanye","yuanshen-bachong","yuanshen-beidou","yuanshen-falushan","yuanshen-ganyu","yuanshen-linghua","yuanshen-luosha","yuanshen-nilu","yuanshen-nuoaier","yuanshen-ying","yuanshen-youla"]
 }
